@@ -1,121 +1,106 @@
 ﻿
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
-
+#include<cstdlib>
 #include <stdio.h>
+#include <vector>    // std::vector
+#include <numeric>   // std::iota
+#include <algorithm> // std::sort, std::nth_element, std::partial_sort
+#include <cmath>
+#include <random>
 
-cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size);
+#define B 128
+#define VOCAB 128000
+#define Temperature 0.5
+#define TopK 50
 
-__global__ void addKernel(int *c, const int *a, const int *b)
-{
-    int i = threadIdx.x;
-    c[i] = a[i] + b[i];
+
+void topk_sampling_cpu_golden(float* input, int* output) {
+
+	std::mt19937 rng(42); // seed
+
+	//Find TopK
+	int* topK_indices = new int[B * TopK];
+	float* topK_values = new float[B * TopK];
+	std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+	for (int i = 0;i < B;i++) {
+		int32_t offset = VOCAB * i;
+
+		std::vector<int> indices(VOCAB);
+		std::iota(indices.begin(), indices.end(), 0);
+		std::nth_element(indices.begin(), indices.begin() + TopK, indices.end(),
+			[&](int a, int b) { return input[offset+a] > input[offset+b]; });
+
+		std::sort(indices.begin(), indices.begin() + TopK,
+			[&](int a, int b) { return input[offset + a] > input[offset + b]; });
+
+		float maximum = input[offset + indices[0]] / Temperature;
+		float denominator = 0.0;
+		for (int k = 0;k < TopK;k++) {
+			topK_indices[TopK * i + k] = indices[k];
+			float exponent = std::exp(input[offset+indices[k]] / Temperature - maximum);
+			denominator += exponent;
+			topK_values[TopK * i + k] = exponent;
+		}
+
+		float random_number = dist(rng);
+		float cdf = 0.0f;
+		output[i] = topK_indices[TopK * i + TopK-1];
+		for (int k = 0;k < TopK;k++) {
+
+			cdf+= topK_values[TopK * i + k]/denominator;
+
+			if(random_number <= cdf){
+
+				output[i] = topK_indices[TopK * i + k];
+				break;
+			}
+		}
+
+	}
+
+	delete[] topK_indices;
+	delete[] topK_values;
+
 }
 
-int main()
-{
-    const int arraySize = 5;
-    const int a[arraySize] = { 1, 2, 3, 4, 5 };
-    const int b[arraySize] = { 10, 20, 30, 40, 50 };
-    int c[arraySize] = { 0 };
 
-    // Add vectors in parallel.
-    cudaError_t cudaStatus = addWithCuda(c, a, b, arraySize);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "addWithCuda failed!");
-        return 1;
-    }
+int main() {
 
-    printf("{1,2,3,4,5} + {10,20,30,40,50} = {%d,%d,%d,%d,%d}\n",
-        c[0], c[1], c[2], c[3], c[4]);
 
-    // cudaDeviceReset must be called before exiting in order for profiling and
-    // tracing tools such as Nsight and Visual Profiler to show complete traces.
-    cudaStatus = cudaDeviceReset();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaDeviceReset failed!");
-        return 1;
-    }
 
-    return 0;
+	float* input = new float[B * VOCAB];
+	int* output = new int[B];
+	std::mt19937 gen(123);
+	std::normal_distribution<float> d(0.0f, 1.0f);
+
+	for (int i = 0; i < B * VOCAB;i++) {
+		input[i] = d(gen);
+	}
+
+
+	topk_sampling_cpu_golden(input, output);
+
+	for (int i = 0;i < B;i++) {
+
+		printf("The Batch %d index is %d\n", i, output[i]);
+	}
+
+	delete[] input;
+	delete[] output;
+
 }
 
-// Helper function for using CUDA to add vectors in parallel.
-cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size)
-{
-    int *dev_a = 0;
-    int *dev_b = 0;
-    int *dev_c = 0;
-    cudaError_t cudaStatus;
 
-    // Choose which GPU to run on, change this on a multi-GPU system.
-    cudaStatus = cudaSetDevice(0);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
-        goto Error;
-    }
 
-    // Allocate GPU buffers for three vectors (two input, one output)    .
-    cudaStatus = cudaMalloc((void**)&dev_c, size * sizeof(int));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
 
-    cudaStatus = cudaMalloc((void**)&dev_a, size * sizeof(int));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
 
-    cudaStatus = cudaMalloc((void**)&dev_b, size * sizeof(int));
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMalloc failed!");
-        goto Error;
-    }
 
-    // Copy input vectors from host memory to GPU buffers.
-    cudaStatus = cudaMemcpy(dev_a, a, size * sizeof(int), cudaMemcpyHostToDevice);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
 
-    cudaStatus = cudaMemcpy(dev_b, b, size * sizeof(int), cudaMemcpyHostToDevice);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
 
-    // Launch a kernel on the GPU with one thread for each element.
-    addKernel<<<1, size>>>(dev_c, dev_a, dev_b);
 
-    // Check for any errors launching the kernel
-    cudaStatus = cudaGetLastError();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "addKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-        goto Error;
-    }
-    
-    // cudaDeviceSynchronize waits for the kernel to finish, and returns
-    // any errors encountered during the launch.
-    cudaStatus = cudaDeviceSynchronize();
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching addKernel!\n", cudaStatus);
-        goto Error;
-    }
 
-    // Copy output vector from GPU buffer to host memory.
-    cudaStatus = cudaMemcpy(c, dev_c, size * sizeof(int), cudaMemcpyDeviceToHost);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed!");
-        goto Error;
-    }
 
-Error:
-    cudaFree(dev_c);
-    cudaFree(dev_a);
-    cudaFree(dev_b);
-    
-    return cudaStatus;
-}
+
+
+
