@@ -88,23 +88,28 @@ __global__ void topK_sampling_gpu(float* input, int* output) {
 	int idx = 0;
 	for (int i = 0;i < TopK && idx<TopK;i++) {
 		float maximum= -100000000;
-		
+		int original_idx = idx;
 		for (int j = 0;j < (VOCAB / NUM_BLOCKS);j++) {
 			if (input[offset + tid * VOCAB + j] >= maximum && input[offset + tid * VOCAB + j] < last_maximum) {
-			
-				maximum = input[offset + tid * VOCAB + j];
+		
+				if (input[offset + tid * VOCAB + j] == maximum) {
+					
+					values_topK[bid][tid][original_idx] = maximum;
+					indices_topK[bid][tid][original_idx] = offset + j;
+					original_idx += 1;
+				}
+				else {
+					maximum = input[offset + tid * VOCAB + j];
+					original_idx = idx;
+					values_topK[bid][tid][original_idx] = maximum;
+					indices_topK[bid][tid][original_idx] = offset + j;
+					original_idx += 1;
+
+				}
 			}
 		}
-
-		for (int k = 0;k < (VOCAB / NUM_BLOCKS) && idx<TopK;k++) {
-			if (input[offset + tid * VOCAB + k] == maximum) {
-				values_topK[bid][tid][idx] = maximum;
-				indices_topK[bid][tid][idx] = offset+k;
-				idx += 1;
-			}
-		}
 			
-
+		idx = original_idx;
 		last_maximum = maximum;
 	}
 
@@ -127,26 +132,30 @@ __global__ void topK_sampling_gpu(float* input, int* output) {
 		idx = 0;
 		for (int i = 0;i < TopK && idx < TopK;i++) {
 			float maximum = -100000000;
+			int original_idx = idx;
 			for (int j = 0;j < NUM_BLOCKS;j++) {
 
 				for (int k = 0;k < TopK;k++) {
 					if (values_topK[j][tid][k] >= maximum && values_topK[j][tid][k] < last_maximum) {
 
-						maximum = values_topK[j][tid][k];
+						if (values_topK[j][tid][k] == maximum) {
+							final_values_topK[tid][original_idx] = maximum;
+							final_indices_topK[tid][original_idx] = indices_topK[j][tid][k];
+							original_idx += 1;
+						}
+						else {
+							original_idx = idx;
+							maximum = values_topK[j][tid][k];
+							final_values_topK[tid][original_idx] = maximum;
+							final_indices_topK[tid][original_idx] = indices_topK[j][tid][k];
+							original_idx += 1;
+						}
+						
 					}
 				}
 			}
 
-			for (int j = 0;j < NUM_BLOCKS;j++) {
-				for (int k = 0;k < TopK && idx < TopK;k++) {
-					if (values_topK[j][tid][k] == maximum) {
-						final_values_topK[tid][idx] = maximum;
-						final_indices_topK[tid][idx] = indices_topK[j][tid][k];
-						idx += 1;
-					}
-				}
-			}
-
+			idx = original_idx;
 			last_maximum = maximum;
 
 		}
@@ -202,7 +211,7 @@ int main() {
 	}
 
 
-	topk_sampling_cpu_golden(h_input, h_output);
+	topk_sampling_cpu_golden(h_input, h_output_cpu);
 
 	cudaMemcpy(d_input, h_input, B * VOCAB * sizeof(float), cudaMemcpyHostToDevice);
 
