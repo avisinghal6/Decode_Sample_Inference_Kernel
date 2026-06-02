@@ -78,12 +78,6 @@ __global__ void topK_sampling_gpu(float* input, int* output) {
 
 	int offset = bid * (VOCAB/NUM_BLOCKS);
 
-
-	for (int i = 0;i < (VOCAB / NUM_BLOCKS);i++) {
-		input[offset + i + tid*VOCAB] /= Temperature;
-	}
-
-
 	float last_maximum = 100000000;
 	int idx = 0;
 	for (int i = 0;i < TopK && idx<TopK;i++) {
@@ -164,7 +158,7 @@ __global__ void topK_sampling_gpu(float* input, int* output) {
 		float maximum = final_values_topK[tid][0];
 		float denominator = 0.0;
 		for (int i = 0;i < TopK;i++) {
-			final_values_topK[tid][i] = expf(final_values_topK[tid][i] - maximum);
+			final_values_topK[tid][i] = expf(final_values_topK[tid][i]/ Temperature - maximum);
 			denominator += final_values_topK[tid][i];
 		}
 
